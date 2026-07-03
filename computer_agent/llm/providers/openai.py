@@ -16,6 +16,8 @@ from computer_agent.logging_setup import get_logger
 
 logger = get_logger(__name__)
 
+_AZURE_PREFIX = "azure/"
+
 
 class OpenAIProvider(BaseLLMProvider):
     """LLM provider backed by the OpenAI Chat Completions API."""

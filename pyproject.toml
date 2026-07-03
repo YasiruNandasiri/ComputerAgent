@@ -65,6 +65,8 @@ dependencies = [
     # Alembic for DB migrations
     "alembic>=1.14.0",
     "sqlalchemy>=2.0.37",
+    "openai>=2.38.0",
+    "litellm>=1.86.1",
 ]
 
 # Optional LLM provider extras — install only what you need:
