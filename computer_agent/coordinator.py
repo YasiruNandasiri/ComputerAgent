@@ -120,6 +120,8 @@ class Coordinator:
             return settings.anthropic_api_key
         if m.startswith(("gpt-", "o1-", "o3-", "o4-", "openai/")):
             return settings.openai_api_key
+        if m.startswith("azure/"):
+            return settings.azure_openai_api_key
         if m.startswith(("gemini", "google/")):
             return settings.google_api_key
         return ""

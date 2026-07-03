@@ -23,6 +23,7 @@ class Settings(BaseSettings):
     # --- LLM ---
     anthropic_api_key: str = Field(default="", alias="ANTHROPIC_API_KEY")
     openai_api_key: str = Field(default="", alias="OPENAI_API_KEY")
+    azure_openai_api_key: str = Field(default="", alias="AZURE_OPENAI_API_KEY")
     google_api_key: str = Field(default="", alias="GOOGLE_API_KEY")
 
     # LLM_PROVIDER: "auto" (detect from model name) | "anthropic" | "openai" | "google" | "litellm"
