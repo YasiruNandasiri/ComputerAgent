@@ -1,0 +1,20 @@
+name: "summarize_directory"
+version: "1.0.0"
+description: "List the contents of a directory and produce a readable summary of what files are there."
+triggers:
+  - "what's in my folder"
+  - "list directory"
+  - "summarize files"
+  - "what files are in"
+parameters:
+  - name: directory
+    type: string
+    required: true
+    description: "Path to the directory to summarize (e.g. ~/Documents)"
+steps:
+  - tool: list_directory
+    description: "List all files in the target directory"
+    params:
+      path: "{directory}"
+      show_hidden: false
+    on_failure: abort

@@ -1,0 +1,65 @@
+# Default Ability Rules
+# Rules are evaluated in order. First match wins for a given trigger.
+#
+# trigger:    regex pattern matched against the tool name being invoked
+# risk_level: the risk level assigned to the matched action
+# action:     require_hitl | block | allow
+# message:    human-readable message shown in the HITL approval UI
+# ----------------------------------------------------------------------------
+
+rules:
+  # --- Destructive filesystem operations ---
+  - name: "delete_file_guard"
+    trigger: "delete_file"
+    action: "require_hitl"
+    always_hitl: true
+    message: "Agent wants to DELETE a file: {path}. This is irreversible."
+
+  - name: "overwrite_guard"
+    trigger: "write_file"
+    action: "require_hitl"
+    message: "Agent wants to WRITE to file: {path}. Review the content before allowing."
+
+  # --- Email and messaging ---
+  - name: "send_email_guard"
+    trigger: "send_email|compose_email|reply_email|forward_email"
+    action: "require_hitl"
+    always_hitl: true
+    message: "Agent wants to SEND AN EMAIL to {recipient} with subject '{subject}'."
+
+  - name: "send_message_guard"
+    trigger: "send_message|send_slack|send_teams|send_sms"
+    action: "require_hitl"
+    always_hitl: true
+    message: "Agent wants to SEND A MESSAGE: {preview}"
+
+  # --- Financial operations ---
+  - name: "financial_block"
+    trigger: "payment|transfer|purchase|checkout|buy|pay|stripe|paypal"
+    action: "block"
+    message: "Financial transactions are blocked. Please complete payment manually."
+
+  # --- Shell execution escalation ---
+  - name: "destructive_shell_guard"
+    trigger: "run_shell_command"
+    action: "require_hitl"
+    message: "Agent wants to RUN SHELL COMMAND: {command}"
+
+  # --- API write operations ---
+  - name: "api_write_guard"
+    trigger: "http_post|http_put|http_delete"
+    action: "require_hitl"
+    message: "Agent wants to make a {method} request to: {url}"
+
+  # --- Credential access ---
+  - name: "credential_block"
+    trigger: "keychain|credential|password|secret|token"
+    action: "require_hitl"
+    always_hitl: true
+    message: "Agent wants to access credentials. Review before allowing."
+
+  # --- Safe read-only operations (always allow) ---
+  - name: "read_allow"
+    trigger: "read_file|list_directory|file_exists|search_files|take_screenshot|ocr_screenshot|find_text_on_screen|browser_screenshot|browser_get_text|browser_get_dom|browser_get_url|http_get|get_screen_size|get_mouse_position"
+    action: "allow"
+    message: ""

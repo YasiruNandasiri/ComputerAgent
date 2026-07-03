@@ -1,0 +1,24 @@
+version: "3.9"
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: computer_agent_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-agent}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-agentpass}
+      POSTGRES_DB: ${POSTGRES_DB:-computer_agent}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./computer_agent/memory/migrations:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-agent} -d ${POSTGRES_DB:-computer_agent}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  postgres_data:

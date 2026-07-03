@@ -1,0 +1,111 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3.0",
+    "pytest-asyncio>=0.25.0",
+    "pytest-mock>=3.14.0",
+    "ruff>=0.9.0",
+    "mypy>=1.14.0",
+    "types-pyyaml>=6.0.12",
+]
+
+[project]
+name = "computer-agent"
+version = "0.1.0"
+description = "A modular, semi-autonomous Computer Controlling Agent for personal productivity"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+
+dependencies = [
+    # LLM
+    "anthropic>=0.49.0",
+    # Browser automation
+    "playwright>=1.50.0",
+    # Desktop automation (cross-platform fallback)
+    "pyautogui>=0.9.54",
+    "pillow>=11.0.0",
+    # Database
+    "asyncpg>=0.30.0",
+    "pgvector>=0.3.6",
+    "psycopg2-binary>=2.9.10",
+    # Data models & validation
+    "pydantic>=2.10.0",
+    "pydantic-settings>=2.7.0",
+    # YAML parsing (skills/abilities manifests)
+    "pyyaml>=6.0.2",
+    # HTTP client
+    "httpx>=0.28.0",
+    # Structured logging
+    "structlog>=25.0.0",
+    # Async utilities
+    "anyio>=4.8.0",
+    # CLI
+    "typer>=0.15.0",
+    "rich>=13.9.0",
+    # Daemon (HTTP API + background worker + scheduler)
+    "fastapi>=0.115.0",
+    "uvicorn>=0.34.0",
+    "apscheduler>=3.11.0",
+    # Embeddings (local fallback)
+    "sentence-transformers>=3.3.0",
+    # OCR
+    "pytesseract>=0.3.13",
+    # OpenTelemetry observability
+    "opentelemetry-api>=1.30.0",
+    "opentelemetry-sdk>=1.30.0",
+    # Environment
+    "python-dotenv>=1.0.1",
+    # macOS notifications
+    "pyobjc-framework-Cocoa>=10.3.2; sys_platform == 'darwin'",
+    "pyobjc-framework-ApplicationServices>=10.3.2; sys_platform == 'darwin'",
+    # Alembic for DB migrations
+    "alembic>=1.14.0",
+    "sqlalchemy>=2.0.37",
+]
+
+# Optional LLM provider extras — install only what you need:
+#   uv add openai          (OpenAI GPT / Azure)
+#   uv add litellm         (Ollama, Bedrock, HuggingFace, 100+ providers)
+#   uv add google-genai    (Google Gemini)
+[project.optional-dependencies]
+openai = ["openai>=1.0"]
+litellm = ["litellm>=1.0"]
+google = ["google-genai>=1.0"]
+
+# Plugin entry-points — external packages can contribute tools, skills, and abilities:
+#
+#   [project.entry-points."computer_agent.tools"]
+#   my_custom_tools = "my_package.tools:register"
+#
+#   [project.entry-points."computer_agent.skills"]
+#   my_skills_dir = "my_package:SKILLS_DIR"
+#
+#   [project.entry-points."computer_agent.abilities"]
+#   my_rules = "my_package:ABILITIES_YAML"
+
+[project.scripts]
+computer-agent = "computer_agent.main:app"
+
+[tool.hatch.build.targets.wheel]
+packages = ["computer_agent"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

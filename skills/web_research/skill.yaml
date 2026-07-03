@@ -1,0 +1,24 @@
+name: "web_research"
+version: "1.0.0"
+description: "Navigate to a URL, extract the page text, and return a summary of the content."
+triggers:
+  - "research"
+  - "look up"
+  - "visit website"
+  - "read webpage"
+parameters:
+  - name: url
+    type: string
+    required: true
+    description: "The URL to visit and read"
+steps:
+  - tool: browser_navigate
+    description: "Open the target URL"
+    params:
+      url: "{url}"
+    on_failure: abort
+  - tool: browser_get_text
+    description: "Extract the visible text from the page"
+    params:
+      selector: "body"
+    on_failure: abort
