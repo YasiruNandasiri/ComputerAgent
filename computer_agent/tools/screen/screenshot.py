@@ -12,20 +12,33 @@ from computer_agent.tools.base import RiskLevel, ToolResult, tool
 
 
 @tool(name="take_screenshot", risk_level=RiskLevel.LOW, category="screen",
-      description="Capture a screenshot of the entire screen and return as base64 PNG.")
+      description="Capture a screenshot of the entire screen and return as base64 JPEG.")
 def take_screenshot() -> ToolResult:
     """Capture a screenshot of the entire primary screen."""
     try:
+        from computer_agent.config import settings
         import pyautogui
         screenshot = pyautogui.screenshot()
+        ow, oh = screenshot.width, screenshot.height
+
+        max_dim = settings.screenshot_max_dimension
+        if max(screenshot.width, screenshot.height) > max_dim:
+            scale = max_dim / max(screenshot.width, screenshot.height)
+            screenshot = screenshot.resize(
+                (int(screenshot.width * scale), int(screenshot.height * scale))
+            )
+
+        screenshot = screenshot.convert("RGB")
         buf = io.BytesIO()
-        screenshot.save(buf, format="PNG")
+        screenshot.save(buf, format="JPEG", quality=settings.screenshot_jpeg_quality)
         b64 = base64.b64encode(buf.getvalue()).decode()
         return ToolResult.ok(
             output=b64,
-            format="base64_png",
+            format="base64_jpeg",
             width=screenshot.width,
             height=screenshot.height,
+            original_width=ow,
+            original_height=oh,
         )
     except Exception as e:
         return ToolResult.fail(error=f"Screenshot failed: {e}")
@@ -43,12 +56,32 @@ def take_region_screenshot(x: int, y: int, width: int, height: int) -> ToolResul
     height: Height of the region in pixels
     """
     try:
+        from computer_agent.config import settings
         import pyautogui
         screenshot = pyautogui.screenshot(region=(x, y, width, height))
+        ow, oh = screenshot.width, screenshot.height
+
+        max_dim = settings.screenshot_max_dimension
+        if max(screenshot.width, screenshot.height) > max_dim:
+            scale = max_dim / max(screenshot.width, screenshot.height)
+            screenshot = screenshot.resize(
+                (int(screenshot.width * scale), int(screenshot.height * scale))
+            )
+
+        screenshot = screenshot.convert("RGB")
         buf = io.BytesIO()
-        screenshot.save(buf, format="PNG")
+        screenshot.save(buf, format="JPEG", quality=settings.screenshot_jpeg_quality)
         b64 = base64.b64encode(buf.getvalue()).decode()
-        return ToolResult.ok(output=b64, format="base64_png", x=x, y=y, width=width, height=height)
+        return ToolResult.ok(
+            output=b64,
+            format="base64_jpeg",
+            width=screenshot.width,
+            height=screenshot.height,
+            original_width=ow,
+            original_height=oh,
+            x=x,
+            y=y,
+        )
     except Exception as e:
         return ToolResult.fail(error=f"Region screenshot failed: {e}")
 

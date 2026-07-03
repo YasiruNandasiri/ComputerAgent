@@ -11,10 +11,11 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 
 from computer_agent.abilities.autonomy import AutonomyLevel, autonomy_manager
@@ -24,6 +25,18 @@ from computer_agent.taskmgr.manager import task_manager
 from computer_agent.taskmgr.models import TaskStatus
 
 router = APIRouter()
+
+_WEB_DIR = Path(__file__).parent / "web"
+
+
+# ---------------------------------------------------------------------------
+# Web UI
+# ---------------------------------------------------------------------------
+
+@router.get("/")
+async def web_ui() -> FileResponse:
+    """Serve the single-page web chat UI."""
+    return FileResponse(_WEB_DIR / "index.html", media_type="text/html")
 
 
 # ---------------------------------------------------------------------------

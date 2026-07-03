@@ -98,6 +98,24 @@ class Settings(BaseSettings):
 
     # --- Agent Behavior ---
     max_retries: int = Field(default=3, alias="MAX_RETRIES")
+
+    # --- LLM Resilience & Context ---
+    # Retry
+    llm_max_retries: int = Field(default=3, alias="LLM_MAX_RETRIES")
+    llm_retry_base_delay: float = Field(default=2.0, alias="LLM_RETRY_BASE_DELAY")
+    llm_retry_max_delay: float = Field(default=60.0, alias="LLM_RETRY_MAX_DELAY")
+
+    # Context management
+    context_window_tokens: int = Field(default=0, alias="CONTEXT_WINDOW_TOKENS")  # 0 = auto-detect via litellm
+    context_compact_threshold: float = Field(default=0.75, alias="CONTEXT_COMPACT_THRESHOLD")
+    context_keep_recent_groups: int = Field(default=6, alias="CONTEXT_KEEP_RECENT_GROUPS")
+    compaction_model: str = Field(default="", alias="COMPACTION_MODEL")  # "" = primary model
+
+    # Token optimization
+    max_images_in_context: int = Field(default=2, alias="MAX_IMAGES_IN_CONTEXT")
+    tool_result_max_chars: int = Field(default=8000, alias="TOOL_RESULT_MAX_CHARS")
+    screenshot_max_dimension: int = Field(default=1440, alias="SCREENSHOT_MAX_DIMENSION")
+    screenshot_jpeg_quality: int = Field(default=60, alias="SCREENSHOT_JPEG_QUALITY")
     step_timeout_seconds: int = Field(default=120, alias="STEP_TIMEOUT_SECONDS")
     max_conversation_turns: int = Field(default=50, alias="MAX_CONVERSATION_TURNS")
 

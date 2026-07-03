@@ -8,13 +8,23 @@ from computer_agent.llm.base import (
     ToolCall,
     ToolResultMessage,
 )
+from computer_agent.llm.errors import (
+    LLMContextWindowError,
+    LLMError,
+    LLMRateLimitError,
+    LLMTransientError,
+)
 from computer_agent.llm.registry import LLMRegistry
 
 __all__ = [
     "BaseLLMProvider",
-    "LLMResponse",
-    "LLMUsage",
+    "LLMContextWindowError",
+    "LLMError",
+    "LLMRateLimitError",
     "LLMRegistry",
+    "LLMResponse",
+    "LLMTransientError",
+    "LLMUsage",
     "Message",
     "ToolCall",
     "ToolResultMessage",

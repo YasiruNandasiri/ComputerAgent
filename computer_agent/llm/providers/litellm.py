@@ -15,10 +15,13 @@ Model name format: "<provider>/<model_name>" e.g. "ollama/llama3"
 
 from __future__ import annotations
 
+import asyncio
 import json
+import random
 from typing import Any
 
 from computer_agent.llm.base import BaseLLMProvider, LLMResponse, LLMUsage, ToolCall
+from computer_agent.llm.errors import LLMContextWindowError, LLMError, LLMRateLimitError
 from computer_agent.logging_setup import get_logger
 
 logger = get_logger(__name__)
@@ -94,8 +97,74 @@ class LiteLLMProvider(BaseLLMProvider):
         if self._api_base:
             kwargs["api_base"] = self._api_base
 
-        response = await litellm.acompletion(**kwargs)
+        response = await self._acompletion_with_retry(litellm, kwargs)
         return self._parse_response(response)
+
+    # ------------------------------------------------------------------
+    # Retry with exponential backoff + jitter
+    # ------------------------------------------------------------------
+
+    async def _acompletion_with_retry(self, litellm_mod: Any, kwargs: dict[str, Any]) -> Any:
+        from computer_agent.config import settings
+
+        err: Exception | None = None
+        retry_after_hint: float | None = None
+
+        for attempt in range(settings.llm_max_retries + 1):
+            try:
+                return await litellm_mod.acompletion(**kwargs)
+            except litellm_mod.ContextWindowExceededError as e:
+                # Never retried — a bigger prompt won't shrink by waiting
+                raise LLMContextWindowError(str(e)) from e
+            except litellm_mod.RateLimitError as e:
+                err = e
+                retry_after_hint = self._extract_retry_after(e)
+            except (
+                litellm_mod.APIConnectionError,
+                litellm_mod.ServiceUnavailableError,
+                litellm_mod.InternalServerError,
+                litellm_mod.Timeout,
+            ) as e:
+                err = e
+                retry_after_hint = None
+            except litellm_mod.AuthenticationError as e:
+                raise LLMError(f"Authentication failed: {e}") from e
+            except litellm_mod.BadRequestError as e:
+                raise LLMError(f"Bad request: {e}") from e
+
+            if attempt == settings.llm_max_retries:
+                raise LLMRateLimitError(
+                    f"LLM call failed after {attempt} retries: {err}",
+                    retry_after=retry_after_hint,
+                ) from err
+
+            delay = min(
+                settings.llm_retry_base_delay * (2 ** attempt),
+                settings.llm_retry_max_delay,
+            )
+            delay *= 0.5 + random.random() * 0.5  # jitter: 50–100%
+            if retry_after_hint is not None:
+                delay = max(delay, retry_after_hint)
+
+            logger.warning(
+                "llm_retry",
+                attempt=attempt + 1,
+                delay=round(delay, 1),
+                error=type(err).__name__,
+                retry_after=retry_after_hint,
+            )
+            await asyncio.sleep(delay)
+
+        # Should never reach here, but satisfy type checker
+        raise LLMRateLimitError(f"LLM call failed after {settings.llm_max_retries} retries: {err}")
+
+    def _extract_retry_after(self, e: Any) -> float | None:
+        headers = getattr(getattr(e, "response", None), "headers", None) or {}
+        val = headers.get("retry-after") or headers.get("Retry-After")
+        try:
+            return float(val) if val else None
+        except (ValueError, TypeError):
+            return None
 
     # ------------------------------------------------------------------
     # Internal parsers (LiteLLM returns OpenAI-compatible format)
@@ -169,23 +238,71 @@ class LiteLLMProvider(BaseLLMProvider):
         tool_calls: list[ToolCall],
         results: list[Any],  # list[ToolResult]
     ) -> list[dict[str, Any]]:
-        """Build tool result messages for the next turn (OpenAI tool role format)."""
-        messages = []
+        """Build tool result messages for the next turn (OpenAI tool role format).
+
+        Screenshots are returned as image_url content blocks in a follow-up user
+        message (the OpenAI API does not accept images inside role:tool messages).
+        """
+        from computer_agent.config import settings
+        from computer_agent.llm.context_manager import truncate_middle
+
+        messages: list[dict[str, Any]] = []
+        image_followups: list[dict[str, Any]] = []  # (text_label, b64, media_type)
+
         for tc, result in zip(tool_calls, results, strict=True):
             output = result.output
-            if isinstance(output, (dict, list)):
-                content_str = json.dumps(output, indent=2, default=str)
-            else:
-                content_str = str(output) if output is not None else "Success"
+            fmt = result.metadata.get("format", "")
 
             if not result.success:
                 content_str = f"Error: {result.error}"
+            elif fmt in ("base64_png", "base64_jpeg"):
+                # Emit a short placeholder in the tool message; actual image follows
+                w = result.metadata.get("width", "?")
+                h = result.metadata.get("height", "?")
+                ow = result.metadata.get("original_width", w)
+                oh = result.metadata.get("original_height", h)
+                media_type = "image/jpeg" if fmt == "base64_jpeg" else "image/png"
+                scale = f"{ow / w:.2f}" if isinstance(w, int) and w else "1.00"
+                content_str = (
+                    f"Screenshot captured ({w}x{h} {'JPEG' if fmt == 'base64_jpeg' else 'PNG'}, "
+                    f"screen is {ow}x{oh} — multiply coordinates by {scale}). "
+                    f"Image attached in the next message."
+                )
+                image_followups.append({
+                    "label": f"[Screenshot from {tc.name}]",
+                    "b64": str(output),
+                    "media_type": media_type,
+                })
+            elif isinstance(output, (dict, list)):
+                content_str = truncate_middle(
+                    json.dumps(output, separators=(",", ":"), default=str),
+                    settings.tool_result_max_chars,
+                )
+            else:
+                content_str = truncate_middle(
+                    str(output) if output is not None else "Success",
+                    settings.tool_result_max_chars,
+                )
 
             messages.append({
                 "role": "tool",
                 "tool_call_id": tc.id,
                 "content": content_str,
             })
+
+        # Attach images in a single follow-up user message after all tool messages
+        if image_followups:
+            content_parts: list[dict[str, Any]] = []
+            for img in image_followups:
+                content_parts.append({"type": "text", "text": img["label"]})
+                content_parts.append({
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"data:{img['media_type']};base64,{img['b64']}",
+                    },
+                })
+            messages.append({"role": "user", "content": content_parts})
+
         return messages
 
     @staticmethod
@@ -206,3 +323,4 @@ class LiteLLMProvider(BaseLLMProvider):
                 for tc in tool_calls
             ],
         }
+

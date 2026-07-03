@@ -32,6 +32,8 @@ from computer_agent.config import settings
 from computer_agent.hitl.checkpoint import CheckpointStatus, hitl_manager
 from computer_agent.llm import LLMRegistry, LLMResponse, ToolCall
 from computer_agent.llm.base import BaseLLMProvider
+from computer_agent.llm.context_manager import ContextManager
+from computer_agent.llm.errors import LLMContextWindowError, LLMRateLimitError
 from computer_agent.logging_setup import get_logger
 from computer_agent.memory.embeddings import embed_text
 from computer_agent.memory.store import memory_store
@@ -95,6 +97,8 @@ class Coordinator:
         self._working_memory: dict[str, Any] = {}
         self._start_time: float = 0.0
         self._token_count: int = 0
+        self._last_input_tokens: int = 0
+        self._context = ContextManager(settings.primary_model, self._provider_format())
 
         logger.info(
             "coordinator_initialized",
@@ -112,6 +116,15 @@ class Coordinator:
             api_key=api_key or None,
             api_base=api_base,
         )
+
+    def _provider_format(self) -> str:
+        """Return 'anthropic', 'openai', or 'plain' based on the resolved provider class."""
+        provider_cls = type(self._llm)
+        if provider_cls.__name__ == "AnthropicProvider":
+            return "anthropic"
+        if hasattr(provider_cls, "format_tool_result_messages"):
+            return "openai"
+        return "plain"
 
     def _pick_api_key(self, model: str) -> str:
         """Return the appropriate API key based on the model name prefix."""
@@ -155,6 +168,21 @@ class Coordinator:
             # Propagate so the TaskManager finalizes the task as cancelled
             logger.info("coordinator_cancelled", session=self.session_id, task_id=self.task_id)
             raise
+        except LLMRateLimitError as e:
+            logger.error("coordinator_rate_limit", error=str(e), session=self.session_id)
+            from computer_agent.llm.context_manager import _mechanical_digest
+            digest = _mechanical_digest(self._conversation)
+            final_response = (
+                f"Azure/LLM rate limit persisted after retries.\n\n"
+                f"**Progress so far:**\n{digest}\n\n"
+                f"**Error:** {e}\n\n"
+                f"Resend your request to continue from where the agent left off."
+            )
+            await event_bus.emit(Event(
+                type=EventType.TASK_FAILED,
+                session_id=self.session_id,
+                data={"error": str(e), "task_id": self.task_id},
+            ))
         except Exception as e:
             logger.error("coordinator_error", error=str(e), session=self.session_id)
             final_response = f"I encountered an error: {e}"
@@ -199,8 +227,20 @@ class Coordinator:
             if self._task_control:
                 await self._task_control.checkpoint()
 
+            # --- Context management: prune images + compact if needed ---
+            self._context.prune_old_images(self._conversation)
+            system_prompt = self._system_prompt()
+            if self._context.needs_compaction(
+                self._conversation, system_prompt, tool_schemas,
+                last_actual=self._last_input_tokens,
+            ):
+                self._conversation = await self._context.compact(
+                    self._conversation, self._llm
+                )
+
             response: LLMResponse = await self._call_llm(tool_schemas)
             self._token_count += response.usage.total_tokens
+            self._last_input_tokens = response.usage.input_tokens
 
             if response.is_done and not response.has_tool_calls:
                 self._conversation.append({"role": "assistant", "content": response.text})
@@ -255,12 +295,26 @@ class Coordinator:
 
     async def _call_llm(self, tool_schemas: list[dict[str, Any]]) -> LLMResponse:
         """Call the configured LLM provider with current conversation state."""
-        return await self._llm.generate(
-            self._conversation,
-            system=self._system_prompt(),
-            tools=tool_schemas if tool_schemas else None,
-            max_tokens=4096,
-        )
+        try:
+            return await self._llm.generate(
+                self._conversation,
+                system=self._system_prompt(),
+                tools=tool_schemas if tool_schemas else None,
+                max_tokens=4096,
+            )
+        except LLMContextWindowError:
+            # Reactive fallback: aggressively compact then retry once
+            logger.warning("context_window_exceeded_reactive_compact", session=self.session_id)
+            self._context.prune_old_images(self._conversation, keep=1)
+            self._conversation = await self._context.compact(
+                self._conversation, self._llm, aggressive=True
+            )
+            return await self._llm.generate(
+                self._conversation,
+                system=self._system_prompt(),
+                tools=tool_schemas if tool_schemas else None,
+                max_tokens=4096,
+            )
 
     def _format_tools(self, tool_defs: list[ToolDefinition]) -> list[dict[str, Any]]:
         """Format tool definitions for the current provider."""
@@ -315,23 +369,58 @@ class Coordinator:
     ) -> None:
         """Append tool results to conversation history in the provider's expected format."""
         import json as _json
+        from computer_agent.llm.context_manager import truncate_middle
+
         provider_cls = type(self._llm)
 
         if provider_cls.__name__ == "AnthropicProvider":
             content = []
             for tc, result in zip(tool_calls, results, strict=True):
                 output = result.output
-                if isinstance(output, (dict, list)):
-                    content_str = _json.dumps(output, indent=2, default=str)
-                else:
-                    content_str = str(output) if output is not None else "Success"
+                fmt = result.metadata.get("format", "")
+
                 if not result.success:
-                    content_str = f"Error: {result.error}"
-                content.append({
-                    "type": "tool_result",
-                    "tool_use_id": tc.id,
-                    "content": content_str,
-                })
+                    content_str: Any = f"Error: {result.error}"
+                    content.append({
+                        "type": "tool_result",
+                        "tool_use_id": tc.id,
+                        "content": content_str,
+                    })
+                elif fmt in ("base64_png", "base64_jpeg"):
+                    w = result.metadata.get("width", "?")
+                    h = result.metadata.get("height", "?")
+                    media_type = "image/jpeg" if fmt == "base64_jpeg" else "image/png"
+                    content.append({
+                        "type": "tool_result",
+                        "tool_use_id": tc.id,
+                        "content": [
+                            {
+                                "type": "image",
+                                "source": {
+                                    "type": "base64",
+                                    "media_type": media_type,
+                                    "data": str(output),
+                                },
+                            },
+                            {"type": "text", "text": f"Screenshot captured ({w}x{h})"},
+                        ],
+                    })
+                else:
+                    if isinstance(output, (dict, list)):
+                        content_str = truncate_middle(
+                            _json.dumps(output, separators=(",", ":"), default=str),
+                            settings.tool_result_max_chars,
+                        )
+                    else:
+                        content_str = truncate_middle(
+                            str(output) if output is not None else "Success",
+                            settings.tool_result_max_chars,
+                        )
+                    content.append({
+                        "type": "tool_result",
+                        "tool_use_id": tc.id,
+                        "content": content_str,
+                    })
             self._conversation.append({"role": "user", "content": content})
 
         elif hasattr(provider_cls, "format_tool_result_messages"):
@@ -342,7 +431,16 @@ class Coordinator:
             lines = []
             for tc, result in zip(tool_calls, results, strict=True):
                 output = result.output
-                output_str = _json.dumps(output, default=str) if isinstance(output, (dict, list)) else str(output or "Success")
+                if isinstance(output, (dict, list)):
+                    output_str = truncate_middle(
+                        _json.dumps(output, separators=(",", ":"), default=str),
+                        settings.tool_result_max_chars,
+                    )
+                else:
+                    output_str = truncate_middle(
+                        str(output or "Success"),
+                        settings.tool_result_max_chars,
+                    )
                 if not result.success:
                     output_str = f"Error: {result.error}"
                 lines.append(f"Tool '{tc.name}' result: {output_str}")

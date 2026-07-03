@@ -1,0 +1,468 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Computer Agent</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: #0f0f11;
+    color: #e8e8ec;
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  /* ── Header ── */
+  #header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 16px;
+    background: #18181c;
+    border-bottom: 1px solid #2a2a32;
+    flex-shrink: 0;
+  }
+  #header h1 { font-size: 1rem; font-weight: 600; color: #a78bfa; }
+  #status-badge {
+    font-size: 0.72rem;
+    padding: 2px 8px;
+    border-radius: 999px;
+    background: #2a2a32;
+    color: #94a3b8;
+  }
+  #status-badge.running { background: #1a3a2a; color: #4ade80; }
+  #status-badge.error   { background: #3a1a1a; color: #f87171; }
+  #new-session-btn {
+    margin-left: auto;
+    background: none;
+    border: 1px solid #3a3a46;
+    color: #94a3b8;
+    padding: 4px 12px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 0.8rem;
+    transition: border-color .2s, color .2s;
+  }
+  #new-session-btn:hover { border-color: #a78bfa; color: #a78bfa; }
+
+  /* ── Main layout ── */
+  #main {
+    display: flex;
+    flex: 1;
+    overflow: hidden;
+  }
+
+  /* ── Chat pane ── */
+  #chat-pane {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-width: 0;
+  }
+
+  #messages {
+    flex: 1;
+    overflow-y: auto;
+    padding: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .msg {
+    max-width: 78%;
+    padding: 10px 14px;
+    border-radius: 12px;
+    line-height: 1.5;
+    font-size: 0.9rem;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  .msg.user {
+    align-self: flex-end;
+    background: #4c1d95;
+    color: #ede9fe;
+    border-bottom-right-radius: 3px;
+  }
+  .msg.agent {
+    align-self: flex-start;
+    background: #1e1e28;
+    color: #e2e8f0;
+    border-bottom-left-radius: 3px;
+    border: 1px solid #2a2a38;
+  }
+  .msg.error-msg {
+    align-self: flex-start;
+    background: #2d0f0f;
+    color: #fca5a5;
+    border: 1px solid #7f1d1d;
+  }
+
+  /* Spinner */
+  .spinner {
+    width: 18px; height: 18px;
+    border: 2px solid #3a3a46;
+    border-top-color: #a78bfa;
+    border-radius: 50%;
+    animation: spin .7s linear infinite;
+    display: inline-block;
+    vertical-align: middle;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* ── Input area ── */
+  #input-area {
+    display: flex;
+    gap: 8px;
+    padding: 12px 16px;
+    background: #18181c;
+    border-top: 1px solid #2a2a32;
+    flex-shrink: 0;
+  }
+  #user-input {
+    flex: 1;
+    background: #0f0f11;
+    border: 1px solid #3a3a46;
+    border-radius: 8px;
+    color: #e8e8ec;
+    padding: 8px 12px;
+    font-size: 0.9rem;
+    resize: none;
+    min-height: 40px;
+    max-height: 140px;
+    font-family: inherit;
+    transition: border-color .2s;
+  }
+  #user-input:focus { outline: none; border-color: #7c3aed; }
+  #send-btn {
+    background: #7c3aed;
+    border: none;
+    border-radius: 8px;
+    color: #fff;
+    padding: 0 18px;
+    cursor: pointer;
+    font-size: 0.9rem;
+    font-weight: 600;
+    transition: background .2s;
+    align-self: flex-end;
+    height: 40px;
+  }
+  #send-btn:hover:not(:disabled) { background: #6d28d9; }
+  #send-btn:disabled { opacity: .5; cursor: not-allowed; }
+
+  /* ── Activity feed ── */
+  #activity-pane {
+    width: 280px;
+    flex-shrink: 0;
+    display: flex;
+    flex-direction: column;
+    border-left: 1px solid #2a2a32;
+    background: #14141a;
+    overflow: hidden;
+  }
+  #activity-pane h2 {
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: .08em;
+    color: #64748b;
+    padding: 10px 14px 6px;
+    border-bottom: 1px solid #2a2a32;
+    flex-shrink: 0;
+  }
+  #activity-feed {
+    flex: 1;
+    overflow-y: auto;
+    padding: 8px 0;
+  }
+  .activity-item {
+    padding: 6px 14px;
+    font-size: 0.78rem;
+    color: #94a3b8;
+    border-left: 2px solid transparent;
+    line-height: 1.4;
+  }
+  .activity-item.step  { border-left-color: #7c3aed; color: #c4b5fd; }
+  .activity-item.done  { border-left-color: #4ade80; color: #86efac; }
+  .activity-item.fail  { border-left-color: #f87171; color: #fca5a5; }
+  .activity-item.hitl  { border-left-color: #facc15; color: #fde68a; }
+  .activity-item.info  { color: #64748b; }
+  .activity-time { font-size: 0.7rem; color: #475569; margin-left: 4px; }
+
+  /* ── HITL banner ── */
+  #hitl-banner {
+    display: none;
+    background: #2d2000;
+    border: 1px solid #a16207;
+    color: #fde68a;
+    padding: 10px 16px;
+    font-size: 0.85rem;
+    gap: 10px;
+    align-items: center;
+    flex-shrink: 0;
+  }
+  #hitl-banner.visible { display: flex; }
+  #hitl-banner span { flex: 1; }
+  .hitl-btn {
+    padding: 4px 14px;
+    border-radius: 6px;
+    border: none;
+    cursor: pointer;
+    font-weight: 600;
+    font-size: 0.8rem;
+  }
+  .hitl-btn.approve { background: #4ade80; color: #052e16; }
+  .hitl-btn.deny    { background: #f87171; color: #450a0a; }
+
+  /* Scrollbar styling */
+  ::-webkit-scrollbar { width: 5px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: #3a3a46; border-radius: 3px; }
+</style>
+</head>
+<body>
+
+<!-- Header -->
+<div id="header">
+  <h1>Computer Agent</h1>
+  <span id="status-badge">idle</span>
+  <button id="new-session-btn" onclick="newSession()">New session</button>
+</div>
+
+<!-- HITL banner -->
+<div id="hitl-banner">
+  <span id="hitl-message">Approval required</span>
+  <button class="hitl-btn approve" onclick="resolveHitl(true)">Approve</button>
+  <button class="hitl-btn deny"    onclick="resolveHitl(false)">Deny</button>
+</div>
+
+<!-- Main -->
+<div id="main">
+  <!-- Chat -->
+  <div id="chat-pane">
+    <div id="messages"></div>
+    <div id="input-area">
+      <textarea id="user-input" rows="1" placeholder="Ask anything…"
+                onkeydown="handleKey(event)" oninput="autoResize(this)"></textarea>
+      <button id="send-btn" onclick="sendMessage()">Send</button>
+    </div>
+  </div>
+
+  <!-- Activity feed -->
+  <div id="activity-pane">
+    <h2>Live activity</h2>
+    <div id="activity-feed"></div>
+  </div>
+</div>
+
+<script>
+// ── State ──────────────────────────────────────────────────────────────────
+let sessionId = localStorage.getItem("ca_session_id") || null;
+let pendingCheckpointId = null;
+let inFlight = false;
+let spinnerMsgEl = null;
+
+// ── Helpers ────────────────────────────────────────────────────────────────
+function fmtTime() {
+  return new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+}
+
+function autoResize(el) {
+  el.style.height = "auto";
+  el.style.height = Math.min(el.scrollHeight, 140) + "px";
+}
+
+function scrollMessages() {
+  const el = document.getElementById("messages");
+  el.scrollTop = el.scrollHeight;
+}
+
+function addMessage(role, text) {
+  const div = document.createElement("div");
+  div.className = "msg " + role;
+  div.textContent = text;
+  document.getElementById("messages").appendChild(div);
+  scrollMessages();
+  return div;
+}
+
+function addActivity(cls, text) {
+  const feed = document.getElementById("activity-feed");
+  const div = document.createElement("div");
+  div.className = "activity-item " + cls;
+  div.innerHTML = text + `<span class="activity-time">${fmtTime()}</span>`;
+  feed.appendChild(div);
+  feed.scrollTop = feed.scrollHeight;
+}
+
+function setStatus(text, cls) {
+  const el = document.getElementById("status-badge");
+  el.textContent = text;
+  el.className = cls || "";
+}
+
+function setBusy(busy) {
+  inFlight = busy;
+  document.getElementById("send-btn").disabled = busy;
+  document.getElementById("user-input").disabled = busy;
+  if (busy) {
+    spinnerMsgEl = document.getElementById("messages").appendChild(
+      Object.assign(document.createElement("div"), {
+        className: "msg agent",
+        innerHTML: '<span class="spinner"></span> thinking…',
+      })
+    );
+    scrollMessages();
+  } else if (spinnerMsgEl) {
+    spinnerMsgEl.remove();
+    spinnerMsgEl = null;
+  }
+}
+
+// ── Session ────────────────────────────────────────────────────────────────
+function newSession() {
+  if (inFlight) return;
+  localStorage.removeItem("ca_session_id");
+  sessionId = null;
+  document.getElementById("messages").innerHTML = "";
+  addActivity("info", "New session started");
+  setStatus("idle");
+}
+
+// ── Send / receive ─────────────────────────────────────────────────────────
+async function sendMessage() {
+  if (inFlight) return;
+  const input = document.getElementById("user-input");
+  const text = input.value.trim();
+  if (!text) return;
+
+  input.value = "";
+  input.style.height = "auto";
+  addMessage("user", text);
+  setBusy(true);
+  setStatus("running", "running");
+
+  try {
+    const body = { message: text };
+    if (sessionId) body.session_id = sessionId;
+
+    const res = await fetch("/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+
+    if (!res.ok) {
+      const err = await res.text();
+      addMessage("error-msg", "Server error: " + err);
+    } else {
+      const data = await res.json();
+      sessionId = data.session_id;
+      localStorage.setItem("ca_session_id", sessionId);
+      addMessage("agent", data.response);
+    }
+  } catch (e) {
+    addMessage("error-msg", "Network error: " + e.message);
+  } finally {
+    setBusy(false);
+    setStatus("idle");
+  }
+}
+
+function handleKey(e) {
+  if (e.key === "Enter" && !e.shiftKey) {
+    e.preventDefault();
+    sendMessage();
+  }
+}
+
+// ── SSE event stream ───────────────────────────────────────────────────────
+function connectEvents() {
+  const es = new EventSource("/events");
+  es.onmessage = (e) => {
+    let evt;
+    try { evt = JSON.parse(e.data); } catch { return; }
+    handleEvent(evt);
+  };
+  es.onerror = () => {
+    // Reconnects automatically; show a transient notice
+    addActivity("info", "Event stream reconnecting…");
+  };
+}
+
+function handleEvent(evt) {
+  const type = evt.type || "";
+  const data = evt.data || {};
+
+  if (type === "task.step.completed") {
+    const tools = (data.tools || []).join(", ") || "step";
+    addActivity("step", `Turn ${data.turn || "?"}: ${tools}`);
+  } else if (type === "task.completed") {
+    addActivity("done", `Task done: ${(data.goal || "").slice(0, 60)}`);
+    setStatus("idle");
+  } else if (type === "task.failed") {
+    addActivity("fail", `Task failed: ${(data.error || "").slice(0, 80)}`);
+    setStatus("error", "error");
+  } else if (type === "task.started") {
+    addActivity("info", `Task started: ${(data.goal || "").slice(0, 60)}`);
+    setStatus("running", "running");
+  } else if (type === "hitl.approval.requested") {
+    pendingCheckpointId = data.checkpoint_id;
+    document.getElementById("hitl-message").textContent =
+      (data.message || data.tool || "Approval required") + " — approve or deny?";
+    document.getElementById("hitl-banner").classList.add("visible");
+    addActivity("hitl", `Approval requested: ${data.tool || ""}`);
+  } else if (type === "hitl.approval.granted") {
+    closeHitlBanner();
+    addActivity("done", `Approved: ${data.tool || ""}`);
+  } else if (type === "hitl.approval.denied" || type === "hitl.approval.expired") {
+    closeHitlBanner();
+    addActivity("fail", `Denied: ${data.tool || ""}`);
+  }
+}
+
+// ── HITL ───────────────────────────────────────────────────────────────────
+function closeHitlBanner() {
+  document.getElementById("hitl-banner").classList.remove("visible");
+  pendingCheckpointId = null;
+}
+
+async function resolveHitl(approved) {
+  if (!pendingCheckpointId) return;
+  const id = pendingCheckpointId;
+  closeHitlBanner();
+  try {
+    await fetch(`/hitl/${id}/resolve`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ approved }),
+    });
+  } catch (e) {
+    addActivity("fail", "HITL resolve failed: " + e.message);
+  }
+}
+
+// ── Status polling (fallback when SSE is missed) ───────────────────────────
+async function pollStatus() {
+  try {
+    const res = await fetch("/status");
+    if (!res.ok) return;
+    const s = await res.json();
+    if (!inFlight) {
+      const running = (s.tasks?.running || 0) + (s.tasks?.queued || 0);
+      setStatus(running ? `${running} running` : "idle", running ? "running" : "");
+    }
+  } catch { /* ignore */ }
+}
+
+// ── Boot ───────────────────────────────────────────────────────────────────
+connectEvents();
+setInterval(pollStatus, 10_000);
+document.getElementById("user-input").focus();
+</script>
+</body>
+</html>

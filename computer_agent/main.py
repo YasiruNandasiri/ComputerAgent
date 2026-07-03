@@ -270,6 +270,7 @@ def daemon(
     console.print(Panel(
         "[bold]Computer Agent — Daemon[/bold]\n"
         f"API: http://{host or settings.daemon_host}:{port or settings.daemon_port}\n"
+        f"Web UI: http://{host or settings.daemon_host}:{port or settings.daemon_port}/\n"
         "Interact via: [bold]computer-agent chat[/bold] / [bold]task[/bold] / "
         "[bold]routine[/bold] / [bold]approve[/bold]",
         border_style="blue",
