@@ -12,6 +12,7 @@ import pytest
 
 from computer_agent.llm.context_manager import (
     ContextManager,
+    _has_image_part,
     _mechanical_digest,
     truncate_middle,
 )
@@ -375,3 +376,92 @@ def test_mechanical_digest_extracts_tool_names():
     assert "take_screenshot" in digest
     assert "run_command" in digest
     assert "error" in digest.lower()
+
+
+def test_mechanical_digest_with_paths_and_urls():
+    """Digest must extract file paths and URLs from tool results; not crash on slicing."""
+    msgs = [
+        _assistant_tool_calls_openai("t1", "read_file"),
+        _tool_result_openai("t1", "Contents of /home/user/file.txt: hello world"),
+        _assistant_tool_calls_openai("t2", "http_get"),
+        _tool_result_openai("t2", "Fetched https://example.com successfully"),
+    ]
+    digest = _mechanical_digest(msgs)
+    assert "/home/user/file.txt" in digest
+    assert "https://example.com" in digest
+
+
+@pytest.mark.asyncio
+async def test_compact_fallback_preserves_tool_names():
+    """When the summarizer LLM fails, the mechanical digest fallback must name the folded tools."""
+    cm = ContextManager("gpt-4o", "openai")
+    msgs = [_user("Do a complex task")]
+    for i in range(10):
+        tid = f"t{i}"
+        msgs.append(_assistant_tool_calls_openai(tid, "some_tool"))
+        msgs.append(_tool_result_openai(tid, f"result {i}"))
+    msgs.append(_assistant_text("All done."))
+
+    stub_llm = MagicMock()
+    stub_llm.generate = AsyncMock(side_effect=RuntimeError("LLM offline"))
+
+    import computer_agent.config as cfg
+    with patch.object(cfg.settings, "context_keep_recent_groups", 4):
+        compacted = await cm.compact(msgs, stub_llm)
+
+    assert compacted[0]["role"] == "user"
+    # The digest must include the tool name from the folded middle — not just "No tool calls"
+    assert "some_tool" in compacted[0]["content"]
+
+
+# ---------------------------------------------------------------------------
+# Assignment D: Anthropic image pruning + repeated compaction marker
+# ---------------------------------------------------------------------------
+
+def test_image_pruning_anthropic_nested():
+    """prune_old_images must detect and stub images nested inside tool_result blocks."""
+    cm = ContextManager("claude-3-5-sonnet", "anthropic")
+    msgs = [
+        _user("goal"),
+        _assistant_tool_use_anthropic("t1", "take_screenshot"),
+        _image_tool_result_anthropic("t1"),
+        _assistant_tool_use_anthropic("t2", "take_screenshot"),
+        _image_tool_result_anthropic("t2"),
+        _assistant_tool_use_anthropic("t3", "take_screenshot"),
+        _image_tool_result_anthropic("t3"),
+    ]
+    pruned = cm.prune_old_images(msgs, keep=1)
+    assert pruned == 2  # 3 images, keep 1 -> prune 2
+    # The last image-carrying message must still have an image (newest preserved)
+    assert _has_image_part(msgs[-1])
+    # The first two image messages must no longer have images
+    assert not _has_image_part(msgs[2])
+    assert not _has_image_part(msgs[4])
+
+
+@pytest.mark.asyncio
+async def test_double_compaction_single_marker():
+    """Compacting twice must produce exactly one summary marker in message[0], never two."""
+    cm = ContextManager("gpt-4o", "openai")
+    msgs = _make_long_openai_conversation(20)
+
+    stub_llm = MagicMock()
+    stub_llm.generate = AsyncMock(return_value=MagicMock(text="Summary round 1"))
+
+    import computer_agent.config as cfg
+    with patch.object(cfg.settings, "context_keep_recent_groups", 4):
+        compacted = await cm.compact(msgs, stub_llm)
+
+    # Append more turns so there is something new to compact
+    stub_llm.generate = AsyncMock(return_value=MagicMock(text="Summary round 2"))
+    for i in range(10):
+        tid = f"extra{i}"
+        compacted.append(_assistant_tool_calls_openai(tid, "extra_tool"))
+        compacted.append(_tool_result_openai(tid, f"extra result {i}"))
+
+    with patch.object(cfg.settings, "context_keep_recent_groups", 4):
+        final = await cm.compact(compacted, stub_llm)
+
+    marker = "--- Progress summary (earlier steps compacted) ---"
+    assert final[0]["content"].count(marker) == 1, (
+        f"Expected exactly one marker, got {final[0]['content'].count(marker)}")

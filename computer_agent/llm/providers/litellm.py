@@ -21,7 +21,7 @@ import random
 from typing import Any
 
 from computer_agent.llm.base import BaseLLMProvider, LLMResponse, LLMUsage, ToolCall
-from computer_agent.llm.errors import LLMContextWindowError, LLMError, LLMRateLimitError
+from computer_agent.llm.errors import LLMContextWindowError, LLMError, LLMRateLimitError, LLMTransientError
 from computer_agent.logging_setup import get_logger
 
 logger = get_logger(__name__)
@@ -109,6 +109,7 @@ class LiteLLMProvider(BaseLLMProvider):
 
         err: Exception | None = None
         retry_after_hint: float | None = None
+        is_rate_limit = True  # distinguishes quota (429) from transient (5xx/timeout)
 
         for attempt in range(settings.llm_max_retries + 1):
             try:
@@ -119,6 +120,7 @@ class LiteLLMProvider(BaseLLMProvider):
             except litellm_mod.RateLimitError as e:
                 err = e
                 retry_after_hint = self._extract_retry_after(e)
+                is_rate_limit = True
             except (
                 litellm_mod.APIConnectionError,
                 litellm_mod.ServiceUnavailableError,
@@ -127,16 +129,22 @@ class LiteLLMProvider(BaseLLMProvider):
             ) as e:
                 err = e
                 retry_after_hint = None
+                is_rate_limit = False
             except litellm_mod.AuthenticationError as e:
                 raise LLMError(f"Authentication failed: {e}") from e
             except litellm_mod.BadRequestError as e:
                 raise LLMError(f"Bad request: {e}") from e
 
             if attempt == settings.llm_max_retries:
-                raise LLMRateLimitError(
-                    f"LLM call failed after {attempt} retries: {err}",
-                    retry_after=retry_after_hint,
-                ) from err
+                if is_rate_limit:
+                    raise LLMRateLimitError(
+                        f"LLM call failed after {attempt} retries: {err}",
+                        retry_after=retry_after_hint,
+                    ) from err
+                else:
+                    raise LLMTransientError(
+                        f"LLM call failed after {attempt} retries (transient error): {err}",
+                    ) from err
 
             delay = min(
                 settings.llm_retry_base_delay * (2 ** attempt),
@@ -144,7 +152,7 @@ class LiteLLMProvider(BaseLLMProvider):
             )
             delay *= 0.5 + random.random() * 0.5  # jitter: 50–100%
             if retry_after_hint is not None:
-                delay = max(delay, retry_after_hint)
+                delay = min(max(delay, retry_after_hint), settings.llm_retry_max_delay)
 
             logger.warning(
                 "llm_retry",
@@ -153,13 +161,29 @@ class LiteLLMProvider(BaseLLMProvider):
                 error=type(err).__name__,
                 retry_after=retry_after_hint,
             )
+            try:
+                from computer_agent.runtime.event_bus import Event, EventType, event_bus
+                await event_bus.emit(Event(
+                    type=EventType.STEP_RETRYING,
+                    data={"attempt": attempt + 1, "delay": round(delay, 1)},
+                ))
+            except Exception:
+                pass  # event emission is best-effort
             await asyncio.sleep(delay)
 
         # Should never reach here, but satisfy type checker
-        raise LLMRateLimitError(f"LLM call failed after {settings.llm_max_retries} retries: {err}")
+        raise LLMTransientError(f"LLM call failed after {settings.llm_max_retries} retries: {err}")
 
     def _extract_retry_after(self, e: Any) -> float | None:
         headers = getattr(getattr(e, "response", None), "headers", None) or {}
+        # Azure uses retry-after-ms (milliseconds) — check first
+        ms_val = headers.get("retry-after-ms") or headers.get("Retry-After-Ms")
+        if ms_val:
+            try:
+                return float(ms_val) / 1000.0
+            except (ValueError, TypeError):
+                pass
+        # Standard Retry-After (seconds)
         val = headers.get("retry-after") or headers.get("Retry-After")
         try:
             return float(val) if val else None
@@ -259,14 +283,17 @@ class LiteLLMProvider(BaseLLMProvider):
                 # Emit a short placeholder in the tool message; actual image follows
                 w = result.metadata.get("width", "?")
                 h = result.metadata.get("height", "?")
-                ow = result.metadata.get("original_width", w)
-                oh = result.metadata.get("original_height", h)
                 media_type = "image/jpeg" if fmt == "base64_jpeg" else "image/png"
-                scale = f"{ow / w:.2f}" if isinstance(w, int) and w else "1.00"
+                # Use point dimensions (mouse coordinate space), not raw pixel dimensions
+                point_w = result.metadata.get("point_width", w)
+                if isinstance(w, int) and w == point_w:
+                    coord_note = "Mouse coordinates map 1:1 to this image."
+                else:
+                    scale_x = f"{point_w / w:.2f}" if isinstance(w, int) and w else "1.00"
+                    coord_note = f"Multiply image coordinates by {scale_x} to get mouse coordinates."
                 content_str = (
-                    f"Screenshot captured ({w}x{h} {'JPEG' if fmt == 'base64_jpeg' else 'PNG'}, "
-                    f"screen is {ow}x{oh} — multiply coordinates by {scale}). "
-                    f"Image attached in the next message."
+                    f"Screenshot captured ({w}x{h} {'JPEG' if fmt == 'base64_jpeg' else 'PNG'}). "
+                    f"{coord_note} Image attached in the next message."
                 )
                 image_followups.append({
                     "label": f"[Screenshot from {tc.name}]",

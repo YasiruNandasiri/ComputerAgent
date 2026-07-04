@@ -33,7 +33,7 @@ from computer_agent.hitl.checkpoint import CheckpointStatus, hitl_manager
 from computer_agent.llm import LLMRegistry, LLMResponse, ToolCall
 from computer_agent.llm.base import BaseLLMProvider
 from computer_agent.llm.context_manager import ContextManager
-from computer_agent.llm.errors import LLMContextWindowError, LLMRateLimitError
+from computer_agent.llm.errors import LLMContextWindowError, LLMRateLimitError, LLMTransientError
 from computer_agent.logging_setup import get_logger
 from computer_agent.memory.embeddings import embed_text
 from computer_agent.memory.store import memory_store
@@ -171,12 +171,28 @@ class Coordinator:
         except LLMRateLimitError as e:
             logger.error("coordinator_rate_limit", error=str(e), session=self.session_id)
             from computer_agent.llm.context_manager import _mechanical_digest
-            digest = _mechanical_digest(self._conversation)
+            try:
+                digest = _mechanical_digest(self._conversation)
+            except Exception as digest_err:
+                logger.warning("digest_failed_in_handler", error=str(digest_err))
+                digest = "(unable to summarize progress)"
             final_response = (
                 f"Azure/LLM rate limit persisted after retries.\n\n"
                 f"**Progress so far:**\n{digest}\n\n"
                 f"**Error:** {e}\n\n"
                 f"Resend your request to continue from where the agent left off."
+            )
+            await event_bus.emit(Event(
+                type=EventType.TASK_FAILED,
+                session_id=self.session_id,
+                data={"error": str(e), "task_id": self.task_id},
+            ))
+        except LLMTransientError as e:
+            logger.error("coordinator_transient_error", error=str(e), session=self.session_id)
+            final_response = (
+                f"A transient error persisted after retries.\n\n"
+                f"**Error:** {e}\n\n"
+                f"The service may be temporarily unavailable. Please try again in a moment."
             )
             await event_bus.emit(Event(
                 type=EventType.TASK_FAILED,
@@ -431,7 +447,15 @@ class Coordinator:
             lines = []
             for tc, result in zip(tool_calls, results, strict=True):
                 output = result.output
-                if isinstance(output, (dict, list)):
+                fmt = result.metadata.get("format", "")
+
+                if not result.success:
+                    output_str = f"Error: {result.error}"
+                elif fmt in ("base64_png", "base64_jpeg"):
+                    w = result.metadata.get("width", "?")
+                    h = result.metadata.get("height", "?")
+                    output_str = f"[Screenshot captured ({w}x{h}) — image display not supported on this provider path]"
+                elif isinstance(output, (dict, list)):
                     output_str = truncate_middle(
                         _json.dumps(output, separators=(",", ":"), default=str),
                         settings.tool_result_max_chars,
@@ -441,8 +465,6 @@ class Coordinator:
                         str(output or "Success"),
                         settings.tool_result_max_chars,
                     )
-                if not result.success:
-                    output_str = f"Error: {result.error}"
                 lines.append(f"Tool '{tc.name}' result: {output_str}")
             self._conversation.append({"role": "user", "content": "\n".join(lines)})
 

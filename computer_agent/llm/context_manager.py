@@ -27,6 +27,8 @@ if TYPE_CHECKING:
 
 logger = get_logger(__name__)
 
+_COMPACTION_MARKER = "\n\n--- Progress summary (earlier steps compacted) ---\n"
+
 # ---------------------------------------------------------------------------
 # Public utility — used by providers too
 # ---------------------------------------------------------------------------
@@ -97,34 +99,63 @@ def _is_image_followup_user(msg: dict[str, Any]) -> bool:
 
 
 def _has_image_part(msg: dict[str, Any]) -> bool:
-    """Return True if the message contains any image content."""
+    """Return True if the message contains any image content (including nested Anthropic format)."""
     content = msg.get("content")
-    if isinstance(content, list):
-        for part in content:
-            if part.get("type") in ("image_url", "image"):
-                return True
+    if not isinstance(content, list):
+        return False
+    return _content_has_image(content)
+
+
+def _content_has_image(parts: list[dict[str, Any]]) -> bool:
+    """Recursively check if any part in a content list is an image."""
+    for part in parts:
+        if not isinstance(part, dict):
+            continue
+        if part.get("type") in ("image_url", "image"):
+            return True
+        # Descend into tool_result inner content (Anthropic format)
+        inner = part.get("content")
+        if isinstance(inner, list) and _content_has_image(inner):
+            return True
     return False
 
 
 def _replace_image_parts_with_stub(msg: dict[str, Any]) -> dict[str, Any]:
-    """Return a copy of msg with image content replaced by a stub string."""
+    """Return a copy of msg with image content replaced by a stub string (recursive)."""
     content = msg.get("content")
     if not isinstance(content, list):
         return msg
+    new_content = _replace_images_recursive(content)
+    if new_content is content:
+        return msg
+    return {**msg, "content": new_content}
+
+
+def _replace_images_recursive(parts: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Walk a content list and replace image parts with a stub, descending into nested lists."""
+    stub = {
+        "type": "text",
+        "text": "[Screenshot removed from history to save context — take a new one if needed.]",
+    }
     new_parts: list[dict[str, Any]] = []
     changed = False
-    for part in content:
+    for part in parts:
+        if not isinstance(part, dict):
+            new_parts.append(part)
+            continue
         if part.get("type") in ("image_url", "image"):
-            new_parts.append({
-                "type": "text",
-                "text": "[Screenshot removed from history to save context — take a new one if needed.]",
-            })
+            new_parts.append(stub)
             changed = True
+        elif isinstance(part.get("content"), list):
+            inner = _replace_images_recursive(part["content"])
+            if inner is not part["content"]:
+                new_parts.append({**part, "content": inner})
+                changed = True
+            else:
+                new_parts.append(part)
         else:
             new_parts.append(part)
-    if not changed:
-        return msg
-    return {**msg, "content": new_parts}
+    return new_parts if changed else parts
 
 
 def _text_of(msg: dict[str, Any]) -> str:
@@ -215,7 +246,7 @@ def _mechanical_digest(messages: list[dict[str, Any]]) -> str:
     if errors:
         parts.append("Last errors: " + "; ".join(errors[-3:]))
     if artifacts:
-        parts.append("Key artifacts: " + ", ".join(dict.fromkeys(artifacts)[:10]))
+        parts.append("Key artifacts: " + ", ".join(list(dict.fromkeys(artifacts))[:10]))
     return "\n".join(parts) or "No tool calls or errors recorded."
 
 
@@ -234,6 +265,7 @@ class ContextManager:
         self._model = model
         self._fmt = provider_format
         self._context_window: int | None = None  # resolved lazily
+        self._tool_tokens: int | None = None  # cached on first call
 
     # ------------------------------------------------------------------
     # Context window resolution
@@ -281,11 +313,29 @@ class ContextManager:
         tools: list[dict[str, Any]],
         last_actual: int = 0,
     ) -> int:
+        tool_tokens = self._compute_tool_tokens(tools)
         primary = self._litellm_token_count(messages, system)
-        if primary is None:
+        if primary is not None:
+            primary += tool_tokens  # ADD tool tokens regardless of path
+        else:
             primary = self._heuristic_token_count(messages, system, tools)
         # Trust whichever is larger: our estimate or the last API-reported value
         return max(primary, last_actual)
+
+    def _compute_tool_tokens(self, tools: list[dict[str, Any]]) -> int:
+        if self._tool_tokens is not None:
+            return self._tool_tokens
+        if not tools:
+            self._tool_tokens = 0
+            return 0
+        try:
+            import litellm
+            self._tool_tokens = litellm.token_counter(
+                model=self._model, text=json.dumps(tools)
+            )
+        except Exception:
+            self._tool_tokens = len(json.dumps(tools)) // 4
+        return self._tool_tokens
 
     def _litellm_token_count(
         self,
@@ -426,18 +476,26 @@ class ContextManager:
             return messages  # nothing to fold
 
         goal_text = _text_of(groups[0][0])
+
+        # Split off any previous summary for carry-forward — replace, never append
+        if _COMPACTION_MARKER in goal_text:
+            goal_text, prev_summary = goal_text.split(_COMPACTION_MARKER, 1)
+        else:
+            prev_summary = ""
+
         middle = [m for g in groups[1:-keep] for m in g]
         tail = [m for g in groups[-keep:] for m in g]
 
-        transcript = _render_for_summary(middle)
-        summary = await self._summarize(llm, transcript)
+        # Feed previous summary + new middle to summarizer so knowledge carries forward
+        transcript = ""
+        if prev_summary:
+            transcript += "Previous summary:\n" + prev_summary + "\n\nNew steps:\n"
+        transcript += _render_for_summary(middle)
 
-        # Rebuild: single user message = goal + summary
-        first_content = (
-            goal_text
-            + "\n\n--- Progress summary (earlier steps compacted) ---\n"
-            + summary
-        )
+        summary = await self._summarize(llm, transcript, fallback_messages=middle)
+
+        # REPLACE (not append) — first message stays bounded
+        first_content = goal_text + _COMPACTION_MARKER + summary
 
         # Anthropic alternation safety: if tail starts with a plain user message,
         # merge it into first to avoid two consecutive user messages
@@ -460,7 +518,7 @@ class ContextManager:
         )
         return new_history
 
-    async def _summarize(self, llm: "BaseLLMProvider", transcript: str) -> str:
+    async def _summarize(self, llm: "BaseLLMProvider", transcript: str, fallback_messages: list[dict] | None = None) -> str:
         """Call LLM to summarize; fall back to mechanical digest on any failure."""
         from computer_agent.config import settings
 
@@ -468,12 +526,12 @@ class ContextManager:
         try:
             resp = await llm.generate(
                 messages=[{"role": "user", "content": _SUMMARY_PROMPT + "\n\n" + transcript}],
-                system="",
+                system="You compress agent execution logs. Be factual and terse.",
                 tools=None,
                 max_tokens=1024,
                 **({"model": model_override} if model_override else {}),
             )
-            return resp.text or _mechanical_digest([])
+            return resp.text or _mechanical_digest(fallback_messages or [])
         except Exception as e:
             logger.warning("compaction_summarizer_failed", error=str(e))
-            return _mechanical_digest([])
+            return _mechanical_digest(fallback_messages or [])

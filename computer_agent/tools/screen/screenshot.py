@@ -17,15 +17,21 @@ def take_screenshot() -> ToolResult:
     """Capture a screenshot of the entire primary screen."""
     try:
         from computer_agent.config import settings
+        from PIL import Image
         import pyautogui
         screenshot = pyautogui.screenshot()
         ow, oh = screenshot.width, screenshot.height
+        # Point dimensions = the coordinate space pyautogui mouse uses
+        point_w, point_h = pyautogui.size()
 
         max_dim = settings.screenshot_max_dimension
-        if max(screenshot.width, screenshot.height) > max_dim:
-            scale = max_dim / max(screenshot.width, screenshot.height)
+        # Resize target must not exceed point dimensions — avoids >1x scale on Retina
+        target_max = min(max_dim, point_w)
+        if max(screenshot.width, screenshot.height) > target_max:
+            scale = target_max / max(screenshot.width, screenshot.height)
             screenshot = screenshot.resize(
-                (int(screenshot.width * scale), int(screenshot.height * scale))
+                (int(screenshot.width * scale), int(screenshot.height * scale)),
+                resample=Image.Resampling.LANCZOS,
             )
 
         screenshot = screenshot.convert("RGB")
@@ -39,6 +45,8 @@ def take_screenshot() -> ToolResult:
             height=screenshot.height,
             original_width=ow,
             original_height=oh,
+            point_width=point_w,
+            point_height=point_h,
         )
     except Exception as e:
         return ToolResult.fail(error=f"Screenshot failed: {e}")
@@ -57,6 +65,7 @@ def take_region_screenshot(x: int, y: int, width: int, height: int) -> ToolResul
     """
     try:
         from computer_agent.config import settings
+        from PIL import Image
         import pyautogui
         screenshot = pyautogui.screenshot(region=(x, y, width, height))
         ow, oh = screenshot.width, screenshot.height
@@ -65,7 +74,8 @@ def take_region_screenshot(x: int, y: int, width: int, height: int) -> ToolResul
         if max(screenshot.width, screenshot.height) > max_dim:
             scale = max_dim / max(screenshot.width, screenshot.height)
             screenshot = screenshot.resize(
-                (int(screenshot.width * scale), int(screenshot.height * scale))
+                (int(screenshot.width * scale), int(screenshot.height * scale)),
+                resample=Image.Resampling.LANCZOS,
             )
 
         screenshot = screenshot.convert("RGB")

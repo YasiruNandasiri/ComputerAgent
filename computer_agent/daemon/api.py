@@ -14,7 +14,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 
@@ -37,6 +37,12 @@ _WEB_DIR = Path(__file__).parent / "web"
 async def web_ui() -> FileResponse:
     """Serve the single-page web chat UI."""
     return FileResponse(_WEB_DIR / "index.html", media_type="text/html")
+
+
+@router.get("/startup-token")
+async def get_startup_token(request: Request) -> dict[str, str]:
+    """Return the daemon's startup bearer token (localhost only, GET is exempt from auth)."""
+    return {"token": request.app.state.startup_token}
 
 
 # ---------------------------------------------------------------------------
@@ -270,6 +276,7 @@ _STREAMED_EVENTS = (
     EventType.TASK_PAUSED,
     EventType.TASK_RESUMED,
     EventType.STEP_COMPLETED,
+    EventType.STEP_RETRYING,
     EventType.HITL_APPROVAL_REQUESTED,
     EventType.HITL_APPROVAL_GRANTED,
     EventType.HITL_APPROVAL_DENIED,

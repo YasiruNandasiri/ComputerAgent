@@ -178,3 +178,51 @@ async def test_context_window_not_retried(provider, fake_litellm):
             await provider._acompletion_with_retry(fake_litellm, {"model": "x", "messages": []})
 
     assert call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_retry_after_capped_at_max_delay(provider, fake_litellm):
+    """Server sends retry-after: 3600 -> delay capped at llm_retry_max_delay (60s)."""
+    delays: list[float] = []
+
+    async def fake_acompletion(**kwargs):
+        err = fake_litellm.RateLimitError("quota")
+        err.response = MagicMock()
+        err.response.headers = {"retry-after": "3600"}
+        raise err
+
+    async def fake_sleep(secs):
+        delays.append(secs)
+
+    fake_litellm.acompletion = fake_acompletion
+
+    patches = _patch_settings(llm_max_retries=1, llm_retry_base_delay=2.0, llm_retry_max_delay=60.0)
+    with patches[0], patches[1], patches[2], patch("asyncio.sleep", side_effect=fake_sleep):
+        with pytest.raises(LLMRateLimitError):
+            await provider._acompletion_with_retry(fake_litellm, {"model": "x", "messages": []})
+
+    assert delays[0] <= 60.0, f"Delay was {delays[0]}s, expected <= 60s (capped, not 3600)"
+
+
+@pytest.mark.asyncio
+async def test_retry_after_ms_header_parsed(provider, fake_litellm):
+    """Azure retry-after-ms: 5000 -> delay is at least 5.0 seconds."""
+    delays: list[float] = []
+
+    async def fake_acompletion(**kwargs):
+        err = fake_litellm.RateLimitError("quota")
+        err.response = MagicMock()
+        err.response.headers = {"retry-after-ms": "5000"}
+        raise err
+
+    async def fake_sleep(secs):
+        delays.append(secs)
+
+    fake_litellm.acompletion = fake_acompletion
+
+    patches = _patch_settings(llm_max_retries=1, llm_retry_base_delay=0.01, llm_retry_max_delay=120.0)
+    with patches[0], patches[1], patches[2], patch("asyncio.sleep", side_effect=fake_sleep):
+        with pytest.raises(LLMRateLimitError):
+            await provider._acompletion_with_retry(fake_litellm, {"model": "x", "messages": []})
+
+    assert delays[0] >= 5.0, f"Delay was {delays[0]}s, expected >= 5.0 (from retry-after-ms: 5000)"

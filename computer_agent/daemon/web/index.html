@@ -265,6 +265,9 @@ let sessionId = localStorage.getItem("ca_session_id") || null;
 let pendingCheckpointId = null;
 let inFlight = false;
 let spinnerMsgEl = null;
+let busyTimer = null;
+let busyStartTime = null;
+let _daemonToken = null;
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 function fmtTime() {
@@ -294,7 +297,16 @@ function addActivity(cls, text) {
   const feed = document.getElementById("activity-feed");
   const div = document.createElement("div");
   div.className = "activity-item " + cls;
-  div.innerHTML = text + `<span class="activity-time">${fmtTime()}</span>`;
+
+  const textNode = document.createElement("span");
+  textNode.textContent = text;    // safe — no HTML interpretation
+  div.appendChild(textNode);
+
+  const timeSpan = document.createElement("span");
+  timeSpan.className = "activity-time";
+  timeSpan.textContent = fmtTime();
+  div.appendChild(timeSpan);
+
   feed.appendChild(div);
   feed.scrollTop = feed.scrollHeight;
 }
@@ -310,14 +322,20 @@ function setBusy(busy) {
   document.getElementById("send-btn").disabled = busy;
   document.getElementById("user-input").disabled = busy;
   if (busy) {
+    busyStartTime = Date.now();
     spinnerMsgEl = document.getElementById("messages").appendChild(
       Object.assign(document.createElement("div"), {
         className: "msg agent",
-        innerHTML: '<span class="spinner"></span> thinking…',
+        innerHTML: '<span class="spinner"></span> thinking\u2026 <span id="elapsed-timer">0s</span>',
       })
     );
+    busyTimer = setInterval(() => {
+      const el = document.getElementById("elapsed-timer");
+      if (el) el.textContent = Math.round((Date.now() - busyStartTime) / 1000) + "s";
+    }, 1000);
     scrollMessages();
   } else if (spinnerMsgEl) {
+    if (busyTimer) { clearInterval(busyTimer); busyTimer = null; }
     spinnerMsgEl.remove();
     spinnerMsgEl = null;
   }
@@ -352,7 +370,10 @@ async function sendMessage() {
 
     const res = await fetch("/chat", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: Object.assign(
+        { "Content-Type": "application/json" },
+        _daemonToken ? { "Authorization": "Bearer " + _daemonToken } : {}
+      ),
       body: JSON.stringify(body),
     });
 
@@ -398,7 +419,12 @@ function handleEvent(evt) {
   const type = evt.type || "";
   const data = evt.data || {};
 
-  if (type === "task.step.completed") {
+  // Filter to current session — each tab only sees its own events
+  if (sessionId && evt.session_id && evt.session_id !== sessionId) return;
+
+  if (type === "task.step.retrying") {
+    addActivity("info", `Retry attempt ${data.attempt || "?"} (waiting ${data.delay || "?"}s…)`);
+  } else if (type === "task.step.completed") {
     const tools = (data.tools || []).join(", ") || "step";
     addActivity("step", `Turn ${data.turn || "?"}: ${tools}`);
   } else if (type === "task.completed") {
@@ -436,9 +462,11 @@ async function resolveHitl(approved) {
   const id = pendingCheckpointId;
   closeHitlBanner();
   try {
+    const headers = { "Content-Type": "application/json" };
+    if (_daemonToken) headers["Authorization"] = "Bearer " + _daemonToken;
     await fetch(`/hitl/${id}/resolve`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers,
       body: JSON.stringify({ approved }),
     });
   } catch (e) {
@@ -460,9 +488,16 @@ async function pollStatus() {
 }
 
 // ── Boot ───────────────────────────────────────────────────────────────────
-connectEvents();
-setInterval(pollStatus, 10_000);
-document.getElementById("user-input").focus();
+async function init() {
+  try {
+    const r = await fetch("/startup-token");
+    if (r.ok) { _daemonToken = (await r.json()).token; }
+  } catch { /* daemon without token endpoint — proceed unauthenticated */ }
+  connectEvents();
+  setInterval(pollStatus, 10_000);
+  document.getElementById("user-input").focus();
+}
+init();
 </script>
 </body>
 </html>

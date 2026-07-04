@@ -115,7 +115,7 @@ class Settings(BaseSettings):
     max_images_in_context: int = Field(default=2, alias="MAX_IMAGES_IN_CONTEXT")
     tool_result_max_chars: int = Field(default=8000, alias="TOOL_RESULT_MAX_CHARS")
     screenshot_max_dimension: int = Field(default=1440, alias="SCREENSHOT_MAX_DIMENSION")
-    screenshot_jpeg_quality: int = Field(default=60, alias="SCREENSHOT_JPEG_QUALITY")
+    screenshot_jpeg_quality: int = Field(default=70, alias="SCREENSHOT_JPEG_QUALITY")
     step_timeout_seconds: int = Field(default=120, alias="STEP_TIMEOUT_SECONDS")
     max_conversation_turns: int = Field(default=50, alias="MAX_CONVERSATION_TURNS")
 
